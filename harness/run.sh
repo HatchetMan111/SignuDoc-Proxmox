@@ -973,6 +973,17 @@ outbox_mode=$(/bin/stat -c '%a' "$MK/var/lib/signudoc/outbox" 2>/dev/null || ech
 if [[ "$outbox_mode" == "700" ]]; then pass "outbox chmod 700"
 else fail "outbox chmod 700 (ist $outbox_mode)"; fi
 
+t "Build-Blocker: npm ci OHNE --omit=dev (next build braucht devDependencies)"
+reset_state
+ec=$(run_installer); assert_exit 0 "$ec"
+if /bin/grep -q "npm ci --omit=dev" "$HS/calls.log" 2>/dev/null; then
+    fail "npm ci läuft mit --omit=dev (next build braucht typescript/tailwind!)"
+else
+    pass "npm ci ohne --omit=dev (devDependencies für next build vorhanden)"
+fi
+assert_calls 1 "npm ci"
+assert_out "SignuDoc ist bereit!"
+
 t "Install mit --port 4545"
 reset_state
 ec=$(run_installer --port 4545); assert_exit 0 "$ec"

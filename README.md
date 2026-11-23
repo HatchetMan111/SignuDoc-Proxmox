@@ -89,7 +89,7 @@ pct exec <CT-ID> -- cat /var/lib/signudoc/outbox/<datei>.json   # "to", "subject
 | OS | Debian 13 (trixie), LXC unprivilegiert, `nesting=1,keyctl=1`, `onboot=1` |
 | Node.js | 24.x (NodeSource `nodistro`-Repo, Fallback: offizielles nodejs.org-Binary-Tarball) |
 | Datenbank | PostgreSQL 17 (PGDG-Repo), nur `127.0.0.1:5432`, DB/User `signudoc` |
-| App | SignuDoc v0.9.0 (git-Tag-Pin, `--version` überschreibbar), Build als User `signudoc` |
+| App | SignuDoc v0.9.0 (git-Tag-Pin, `--version` überschreibbar), `npm ci` (inkl. devDependencies, Next.js braucht sie für `next build`) + Build als User `signudoc` |
 | Web-UI | Next.js (`next start`) auf `0.0.0.0:8080`, systemd `signudoc.service` (`Restart=always`) |
 | Daten | `/var/lib/signudoc/storage` (PDFs), `/var/lib/signudoc/outbox` (Mails), Postgres unter `/var/lib/postgresql` |
 | Secrets | `/opt/signudoc/.env` (chmod 0640): `BETTER_AUTH_SECRET`, DB-Passwort, `SETUP_TOKEN` – Update-erhaltend |
@@ -109,6 +109,14 @@ automatische Updates über `--update`).
   inkl. aller Daten.
 - **Backup:** `pct backup <CT-ID>` / vzdump über die PVE-GUI – Container enthält Postgres-Daten,
   PDFs und Outbox vollständig.
+
+## Build im Container (zwei Fallen)
+
+- **`npm ci` läuft MIT devDependencies.** `next build` braucht `typescript`, `@types/*`,
+  `tailwindcss` und `@tailwindcss/postcss`. Ein `--omit=dev` (oder `--omit=dev`-Verlockung
+  wie in manchen Docker-Guides) bricht den Build zwingend.
+- **`next/font/google`** lädt die Schriften während des Builds → der CT braucht
+  Build-Zeit-Internet (hat er). Danach läuft alles offline weiter.
 
 ## Node.js-Installation (Live-Grube Debian 13)
 

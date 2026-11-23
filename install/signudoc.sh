@@ -36,7 +36,7 @@
 set -Eeuo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="1.0.1"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
+INSTALLER_VERSION="1.0.2"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
 APP_NAME="signudoc"
 UPSTREAM_OWNER="NYLLON-SOFTWARE"
 UPSTREAM_REPO="SignuDoc"
@@ -735,21 +735,29 @@ chown "$APP_USER:$APP_GROUP" "$ENV_FILE"
 grep -qxF '.env' "$APP_DIR/.gitignore" 2>/dev/null || echo '.env' >> "$APP_DIR/.gitignore"
 ok ".env geschrieben (Secrets bleiben bei Update erhalten; Rechte 0640, User ${APP_USER})"
 
-echo ">>> npm-Abhängigkeiten installieren (npm ci --omit=dev) ..."
+echo ">>> npm-Abhängigkeiten installieren (npm ci) ..."
 # als APP_USER ausführen: node_modules gehören dann dem Service-User (kein root-Besitz)
+#
+# WICHTIG: OHNE --omit=dev! SignuDoc ist ein Next.js-Produktionsbuild, der zur
+# Build-Zeit devDependencies braucht: typescript + @types/*, tailwindcss,
+# @tailwindcss/postcss, eslint-config-next. Mit --omit=dev (ursprünglicher Fehler)
+# scheitert `next build` zwingend ("Cannot find module 'typescript'"). Der
+# Container ist eine Build- UND Laufzeit-Unit, deshalb installieren wir alles.
 if [[ -d "$APP_DIR/node_modules" && -f "$APP_DIR/package-lock.json" ]]; then
     # Update-Pfad: bei geändertem Lockfile prüft npm ci selbst und installiert ggf. neu
     :
 fi
-runuser -u "$APP_USER" -- bash -c "cd '$APP_DIR' && npm ci --omit=dev --no-audit --no-fund" \
+runuser -u "$APP_USER" -- bash -c "cd '$APP_DIR' && npm ci --no-audit --no-fund" \
     || die "npm ci fehlgeschlagen (siehe npm-Ausgabe im Setup-Log; Netz/Registry prüfen)"
 
 echo ">>> Next.js Produktions-Build (npm run build) ..."
 # Build braucht mehr als die Default-Speicher-Limits des Node-20-Heuristik →
 # --max-old-space-size passend zu CT_MEMORY hochsetzen (2 GB Default).
+# next/font/google lädt Schriften WAHREND des Builds (Netzwerk nötig) – der CT
+# hat Internet; NEXT_TELEMETRY_DISABLED verhindert den anonymen Build-Ping.
 runuser -u "$APP_USER" -- bash -c \
-    "cd '$APP_DIR' && NODE_OPTIONS='--max-old-space-size=1536' npm run build" \
-    || die "npm run build fehlgeschlagen (siehe Build-Ausgabe im Setup-Log)"
+    "cd '$APP_DIR' && NODE_OPTIONS='--max-old-space-size=1536' NEXT_TELEMETRY_DISABLED=1 npm run build" \
+    || die "npm run build fehlgeschlagen (siehe Build-Ausgabe im Setup-Log)\n  Hinweis: next/font/google braucht Netz zum Build; Telemetrie ist aus."
 
 echo ">>> Migrationen ausführen (db/migrate.mjs – idempotent) ..."
 runuser -u "$APP_USER" -- bash -c "cd '$APP_DIR' && npm run db:migrate" \

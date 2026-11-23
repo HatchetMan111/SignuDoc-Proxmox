@@ -87,7 +87,7 @@ pct exec <CT-ID> -- cat /var/lib/signudoc/outbox/<datei>.json   # "to", "subject
 | Komponente | Details |
 |---|---|
 | OS | Debian 13 (trixie), LXC unprivilegiert, `nesting=1,keyctl=1`, `onboot=1` |
-| Node.js | 24.x (NodeSource-Repo, exakt `package.json`-engines) |
+| Node.js | 24.x (NodeSource `nodistro`-Repo, Fallback: offizielles nodejs.org-Binary-Tarball) |
 | Datenbank | PostgreSQL 17 (PGDG-Repo), nur `127.0.0.1:5432`, DB/User `signudoc` |
 | App | SignuDoc v0.9.0 (git-Tag-Pin, `--version` überschreibbar), Build als User `signudoc` |
 | Web-UI | Next.js (`next start`) auf `0.0.0.0:8080`, systemd `signudoc.service` (`Restart=always`) |
@@ -109,6 +109,17 @@ automatische Updates über `--update`).
   inkl. aller Daten.
 - **Backup:** `pct backup <CT-ID>` / vzdump über die PVE-GUI – Container enthält Postgres-Daten,
   PDFs und Outbox vollständig.
+
+## Node.js-Installation (Live-Grube Debian 13)
+
+NodeSource hat für **Debian 13 (trixie) kein Distributions-Repo**
+(`node_24.x/dists/trixie/Release` → 404). Der Installer nutzt deshalb die
+distro-unabhängige **`nodistro`**-Distribution und prüft Node-Version **und** npm
+danach hart. Passt es nicht (z. B. apt liefert Debians `nodejs 20` ohne npm), greift
+automatisch das **offizielle Binary-Tarball von nodejs.org** (`/opt/node-24` +
+Symlinks in `/usr/local/bin`). Schlägt auch das fehl, bricht die Installation mit
+vollständiger Diagnose ab (`node -v`, `npm -v`, `apt-cache policy nodejs`) statt
+mitten im Build an „npm: command not found".
 
 ## Verifikation & Debugging
 

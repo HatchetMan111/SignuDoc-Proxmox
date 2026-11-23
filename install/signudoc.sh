@@ -36,7 +36,7 @@
 set -Eeuo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="1.0.0"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
+INSTALLER_VERSION="1.0.1"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
 APP_NAME="signudoc"
 UPSTREAM_OWNER="NYLLON-SOFTWARE"
 UPSTREAM_REPO="SignuDoc"
@@ -548,33 +548,100 @@ if ! su - postgres -c "psql -tAc \"SELECT 1 FROM pg_database WHERE datname='${DB
 fi
 ok "Datenbank '${DB_NAME}' + Benutzer '${DB_USER}' bereit (nur 127.0.0.1:${DB_PORT} – keine Netz-Exposition)"
 
-echo ">>> Node.js ${NODE_MAJOR}.x (NodeSource-Repo) installieren ..."
-# SignuDoc braucht exakt Node 24 (package.json "engines": "24.x").
-if ! command -v node >/dev/null 2>&1 || [[ "$(node -v 2>/dev/null | cut -c2- | cut -d. -f1)" -lt ${NODE_MAJOR} ]]; then
+echo ">>> Node.js ${NODE_MAJOR}.x installieren (NodeSource, Fallback nodejs.org) ..."
+# SignuDoc braucht exakt Node 24 (package.json "engines": "24.x") + npm (Next.js).
+#
+# Live-Grube 2026-11-23 (ProxSmartHome, CT 207): NodeSource hat FÜR DEBIAN 13
+# (trixie) KEIN Distributions-Repo – `.../node_24.x/dists/trixie/Release` → 404.
+# Der apt-Codename führte still zum apt-Warnpfad, und apt installierte Debians
+# nodejs 20.19.2 (OHNE npm) → "npm: command not found" mitten im Build.
+# ZWEI Massnahmen:
+#  1. Immer die distro-unabhängige `nodistro`-Distribution nutzen (funktioniert
+#     auf trixie, bookworm, jammy, … – NodeSource dokumentiert das so).
+#  2. Version + npm NACH der Installation HAR T prüfen; passt es nicht, das
+#     offizielle Binary-Tarball von nodejs.org installieren ( Fallback).
+NODE_VER_OK=0
+node_major() { node -v 2>/dev/null | cut -c2- | cut -d. -f1; }
+if command -v node >/dev/null 2>&1 && [[ "$(node_major)" -ge ${NODE_MAJOR} ]] \
+   && command -v npm >/dev/null 2>&1; then
+    NODE_VER_OK=1
+else
     install -d -m 0755 /etc/apt/keyrings
-    if [[ ! -f /etc/apt/keyrings/nodesource.asc ]]; then
-        curl -fsSL --retry 3 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-            -o /tmp/nodesource.gpg 2>/dev/null || true
-        # Key als ASCII-armored ablegen (dearmorn erspart gnupg-Abhängigkeit)
-        if head -1 /tmp/nodesource.gpg 2>/dev/null | grep -q 'BEGIN PGP'; then
-            cp /tmp/nodesource.gpg /etc/apt/keyrings/nodesource.asc
-        else
-            gpg --dearmor < /tmp/nodesource.gpg > /etc/apt/keyrings/nodesource.gpg 2>/dev/null \
-                || die "nodesource-Key konnte nicht importiert werden"
-            rm -f /etc/apt/keyrings/nodesource.asc
+    # 1) NodeSource (nodistro) – Key immer dearmoren (kompatibel mit apt ≥ 2.4)
+    if curl -fsSL --retry 3 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            -o /tmp/nodesource.gpg 2>/dev/null; then
+        gpg --dearmor < /tmp/nodesource.gpg > /etc/apt/keyrings/nodesource.gpg 2>/dev/null \
+            || warn "nodesource-Key konnte nicht dearmort werden"
+        rm -f /tmp/nodesource.gpg
+    else
+        warn "nodesource-Key nicht ladbar – überspringe NodeSource"
+    fi
+    if [[ -s /etc/apt/keyrings/nodesource.gpg ]]; then
+        # nodistro = distro-unabhängig (trixie/bookworm/jammy) – NICHT den
+        # lsb_release-Codename verwenden (hat auf Debian 13 ins Leere gezeigt).
+        echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+            > /etc/apt/sources.list.d/nodesource.list
+        apt-get update -qq >/dev/null 2>&1 || warn "apt update nach NodeSource-Einrichtung mit Warnung"
+        if ! apt-get install -y -qq nodejs >/dev/null 2>&1; then
+            warn "NodeSource-Installation von nodejs fehlgeschlagen (Repo/Netz?)"
         fi
     fi
-    # Key-Format robust machen: .asc (armored) ODER .gpg (dearmored) akzeptieren
-    KEY_REF="/etc/apt/keyrings/nodesource.gpg"
-    [[ -f /etc/apt/keyrings/nodesource.asc ]] && KEY_REF="/etc/apt/keyrings/nodesource.asc"
-    CODENAME=$(lsb_release -cs 2>/dev/null || echo trixie)
-    echo "deb [signed-by=${KEY_REF}] https://deb.nodesource.com/node_${NODE_MAJOR}.x ${CODENAME} main" \
-        > /etc/apt/sources.list.d/nodesource.list
-    apt-get update -qq >/dev/null 2>&1 || warn "apt update nach NodeSource-Einrichtung mit Warnung"
-    apt-get install -y -qq nodejs >/dev/null || die "Node.js-Installation fehlgeschlagen (apt-Ausgabe siehe Setup-Log)"
+    # harte Nachprüfung: Major-Version UND npm müssen stimmen
+    if command -v node >/dev/null 2>&1 && [[ "$(node_major)" -ge ${NODE_MAJOR} ]] \
+       && command -v npm >/dev/null 2>&1; then
+        NODE_VER_OK=1
+    else
+        warn "Node.js ${NODE_MAJOR}.x + npm nicht über NodeSource verfügbar –"
+        warn "offizielles Binary-Tarball (nodejs.org) als Fallback ..."
+        # 2) Fallback: offizielles Tarball (nodejs.org) – unabhängig von apt/Repo
+        NODE_DL_ARCH=""
+        case "$(dpkg --print-architecture 2>/dev/null || uname -m)" in
+            amd64|x86_64)   NODE_DL_ARCH="x64" ;;
+            arm64|aarch64)  NODE_DL_ARCH="arm64" ;;
+        esac
+        if [[ -z "$NODE_DL_ARCH" ]]; then
+            warn "Fallback fehlgeschlagen: Host-Architektur ($(dpkg --print-architecture 2>/dev/null || uname -m)) wird von nodejs.org nicht unterstützt."
+            NODE_DL_ARCH=""
+        fi
+        NODE_ROOT="/opt/node-${NODE_MAJOR}"
+        TARBALL=$(curl -fsSL --retry 3 "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/" \
+            | grep -o "node-v${NODE_MAJOR}\.[0-9.]*-linux-${NODE_DL_ARCH}\.tar\.xz" | head -1 || true)
+        if [[ -z "$TARBALL" ]]; then
+            warn "Fallback fehlgeschlagen: kein node-v${NODE_MAJOR}.*-linux-${NODE_DL_ARCH}.tar.xz auf nodejs.org gefunden."
+            TARBALL=""
+        fi
+        if [[ -n "$TARBALL" ]]; then
+            echo "    Fallback: ${TARBALL}"
+            if curl -fsSL --retry 3 "https://nodejs.org/dist/latest-v${NODE_MAJOR}.x/${TARBALL}" \
+                    -o /tmp/node.tar.xz; then
+                mkdir -p "$NODE_ROOT"
+                if tar -xJf /tmp/node.tar.xz -C "$NODE_ROOT" --strip-components=1; then
+                    ln -sf "$NODE_ROOT/bin/node" /usr/local/bin/node
+                    ln -sf "$NODE_ROOT/bin/npm"  /usr/local/bin/npm
+                    ln -sf "$NODE_ROOT/bin/npx"  /usr/local/bin/npx
+                else
+                    warn "node-Tarball entpacken fehlgeschlagen (xz-utils installiert?)"
+                fi
+                rm -f /tmp/node.tar.xz
+            else
+                warn "node-Tarball nicht ladbar: ${TARBALL}"
+            fi
+        fi
+        if command -v node >/dev/null 2>&1 && [[ "$(node_major)" -ge ${NODE_MAJOR} ]] \
+           && command -v npm >/dev/null 2>&1; then
+            NODE_VER_OK=1
+        fi
+    fi
 fi
-NODE_V=$(node -v 2>/dev/null || echo "unbekannt")
-ok "Node.js ${NODE_V} (npm $(npm -v 2>/dev/null || echo '?')) installiert"
+if [[ "$NODE_VER_OK" -ne 1 ]]; then
+    err "Node.js ${NODE_MAJOR}.x + npm konnten NICHT installiert werden."
+    err "  node:  $(command -v node || echo fehlt)  $(node -v 2>/dev/null || echo '-')"
+    err "  npm:   $(command -v npm  || echo fehlt)  $(npm -v 2>/dev/null || echo '-')"
+    err "  apt:   $(apt-cache policy nodejs 2>/dev/null | sed -n '2p' | tr -s ' ')"
+    err "  Debug: apt-get install -y nodejs npm && node -v && npm -v"
+    die "Node.js ${NODE_MAJOR}.x + npm sind Pflicht (SignuDoc: next build). Manueller Fix im CT: pct exec <CT-ID> -- bash"
+fi
+ok "Node.js $(node -v 2>/dev/null) (npm $(npm -v 2>/dev/null || echo '?')) installiert"
 
 echo ">>> SignuDoc ${SIGNUDOC_VERSION} klonen (idempotent) ..."
 cd "$APP_DIR"
@@ -690,6 +757,11 @@ runuser -u "$APP_USER" -- bash -c "cd '$APP_DIR' && npm run db:migrate" \
 ok "Migrationen durch"
 
 echo ">>> systemd-Unit 'signudoc' schreiben (Restart=always) ..."
+# npm-Pfad explizit auflösen (Unit braucht einen absoluten Pfad):
+# NodeSource → /usr/bin/npm, nodejs.org-Fallback → /usr/local/bin/npm.
+NPM_BIN=$(command -v npm 2>/dev/null || true)
+[[ -n "$NPM_BIN" ]] || die "npm nicht im PATH – Unit kann nicht geschrieben werden (node: $(node -v 2>/dev/null || echo fehlt))"
+echo "    npm: $NPM_BIN"
 # Type=simple + next start als Main-Prozess: systemd überwacht, Restart=always
 # startet bei Crash/Reboot. PORT aus der .env (UI_PORT) – next start bindet
 # 0.0.0.0:<PORT>, damit die Web-UI über die CT-IP im LAN erreichbar ist.
@@ -708,7 +780,7 @@ Group=${APP_GROUP}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${ENV_FILE}
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/npm run start
+ExecStart=${NPM_BIN} run start
 Restart=always
 RestartSec=10
 StandardOutput=append:${LOG_DIR}/signudoc.log

@@ -88,7 +88,7 @@ ln -sf "$MK/mock-sleep" "$INNERBIN/sleep"
 # ein echtes node/npm/postgres des Desktops das Bootstrap-Design aushebeln.
 link_real "$INNERBIN" bash sh env awk sed grep cut head tail tr od seq cat mv cp rm \
     mkdir chmod chown chgrp dirname basename sort uniq printf ls touch readlink stat uname \
-    tee openssl wc ln base64
+    tee openssl wc ln base64 tar xz dpkg mktemp
 ln -sf "$MK/mock-aptget"    "$INNERBIN/apt-get"
 ln -sf "$MK/mock-systemctl" "$INNERBIN/systemctl"
 ln -sf "$MK/mock-ip"        "$INNERBIN/ip"
@@ -106,6 +106,7 @@ ln -sf "$MK/mock-install"   "$INNERBIN/install"
 ln -sf "$MK/mock-dpkg"      "$INNERBIN/dpkg"
 ln -sf "$MK/mock-psql"      "$INNERBIN/psql"
 ln -sf "$MK/mock-gpg"       "$INNERBIN/gpg"
+ln -sf "$(env -i /bin/sh -c "command -v tar")"  "$INNERBIN/tar"
 
 cat > "$MK/mock-chown" <<'EOF'
 #!/usr/bin/env bash
@@ -235,6 +236,7 @@ case "$cmd" in
         # /tmp/ (Mock-Root liegt unter /tmp) und würde doppelt umgeschrieben.
         /bin/sed -e "s|/tmp/|$MK/tmp/|g" -e "s|/etc/|$MK/etc/|g" \
                  -e "s|/opt/|${MK}/opt/|g" -e "s|/var/|${MK}/var/|g" \
+                 -e "s|/usr/local/|${MK}/usr/local/|g" \
                  -e "s|/root/|$MK/root/|g" "$src" > "$MK$dst"
         exit 0 ;;
     exec)
@@ -263,6 +265,7 @@ case "$cmd" in
             a="${a//\/var\/lib\/signudoc/$MK/var/lib/signudoc}"
             a="${a//\/etc\//$MK/etc/}"
             a="${a//\/var\/lib\/postgresql/$MK/var/lib/postgresql}"
+            a="${a//\/usr\/local\//$MK/usr/local/}"
             printf '%s' "$a"
         }
         newargs=()
@@ -340,6 +343,7 @@ cat > "$MK/mock-curl" <<'EOF'
 # curl-Mock: Health-/HTTP-Checks → 200/302/000; Downloads → Stub-Dateien
 set -u
 HS="${HARNESS_STATE:?}"
+MK="${MKROOT:-$(dirname "$HS")}"   # robust: MKROOT (Inner-Ebene) oder dirname(HS)
 url=""; outfile=""
 prev=""
 for a in "$@"; do
@@ -348,6 +352,32 @@ for a in "$@"; do
     prev="$a"
 done
 echo "curl $*" >> "$HS/calls.log" 2>/dev/null || true
+
+# nodejs.org: Binary-Tarball (echtes tar.xz) – MUSS VOR dem Index-Muster stehen,
+# sonst matcht `*latest-v*` auch die .tar.xz-URL und liefert HTML statt Datei.
+case "$url" in
+    *nodejs.org/dist/*.tar.xz)
+        if [[ -f "$HS/no_nodejs_org" ]]; then echo "000"; exit 7; fi
+        [[ -n "$outfile" ]] || { echo "curl mock: node-tarball ohne -o" >&2; exit 1; }
+        # echtes, winziges tar.xz bauen (bin/node, bin/npm, bin/npx)
+        stage="$MK/node-stage"
+        rm -rf "$stage"; mkdir -p "$stage/bin"
+        printf '#!/bin/sh\nexit 0\n' > "$stage/bin/node"
+        printf '#!/bin/sh\nexit 0\n' > "$stage/bin/npm"
+        printf '#!/bin/sh\nexit 0\n' > "$stage/bin/npx"
+        chmod +x "$stage"/bin/*
+        tar -C "$stage" -cJf "$outfile" bin
+        rm -rf "$stage"
+        echo "24.11.0" > "$HS/node_v"      # Tarball = Node 24 (Fallback-Erfolg)
+        ln -sf "$MK/mock-node" "$MK/bin-inner/node"
+        ln -sf "$MK/mock-npm"  "$MK/bin-inner/npm"
+        exit 0 ;;
+    *nodejs.org/dist/latest-v*)
+        if [[ -f "$HS/no_nodejs_org" ]]; then echo "000"; exit 7; fi
+        # HTML-Index mit einem Tarball-Namen (Arch x64)
+        printf '<a href="node-v24.11.0-linux-x64.tar.xz">node-v24.11.0-linux-x64.tar.xz</a>\n'
+        exit 0 ;;
+esac
 
 # Key-Downloads (PGDG / NodeSource): Stub-Dateien schreiben
 case "$url" in
@@ -391,8 +421,18 @@ if [[ "${1:-}" == "install" ]]; then
             curl)
                 [[ -e "$INNERBIN_DIR/curl" ]] || ln -sf "$MK/mock-curl" "$INNERBIN_DIR/curl" ;;
             nodejs)
-                [[ -e "$INNERBIN_DIR/node" ]] || ln -sf "$MK/mock-node" "$INNERBIN_DIR/node"
-                [[ -e "$INNERBIN_DIR/npm"  ]] || ln -sf "$MK/mock-npm"  "$INNERBIN_DIR/npm" ;;
+                # Hebel apt_nodejs_fail=1: NodeSource-Repo nicht installierbar
+                # (Live-Fall Debian 13: dists/trixie → 404, apt fällt auf
+                # Debians nodejs 20 ohne npm zurück).
+                if [[ -f "$HS/apt_nodejs_fail" ]]; then
+                    if [[ -f "$HS/node_v_debian" ]]; then
+                        # Debian-Repo liefert nodejs 20 OHNE npm
+                        [[ -e "$INNERBIN_DIR/node" ]] || ln -sf "$MK/mock-node" "$INNERBIN_DIR/node"
+                    fi
+                else
+                    [[ -e "$INNERBIN_DIR/node" ]] || ln -sf "$MK/mock-node" "$INNERBIN_DIR/node"
+                    [[ -e "$INNERBIN_DIR/npm"  ]] || ln -sf "$MK/mock-npm"  "$INNERBIN_DIR/npm"
+                fi ;;
             git)
                 [[ -e "$INNERBIN_DIR/git" ]] || ln -sf "$MK/mock-git" "$INNERBIN_DIR/git" ;;
             postgresql*)
@@ -532,10 +572,14 @@ EOF
 
 cat > "$MK/mock-node" <<'EOF'
 #!/usr/bin/env bash
+# node-Mock: Version aus $HS/node_v (Default v24.11.0; "20" simuliert Debians
+# nodejs 20.19.2 ohne npm – der Live-Fall auf Debian 13 / CT 207).
 set -u
 HS="${HARNESS_STATE:?}"
 echo "node $*" >> "$HS/calls.log"
-if [[ "${1:-}" == "-v" || "${1:-}" == "--version" ]]; then echo "v24.11.0"; exit 0; fi
+ver="24.11.0"
+[[ -f "$HS/node_v" ]] && ver=$(cat "$HS/node_v")
+if [[ "${1:-}" == "-v" || "${1:-}" == "--version" ]]; then echo "v$ver"; exit 0; fi
 exit 0
 EOF
 
@@ -717,7 +761,9 @@ EOF
 
 cat > "$MK/mock-gpg" <<'EOF'
 #!/usr/bin/env bash
-# gpg-Mock: --dearmor → ok
+# gpg-Mock: --dearmor muss stdin→stdout reichen (sonst leerer Keyring und der
+# Installer überspringt NodeSource still → Fallback wird fälschlich ausgelöst).
+if [[ "${1:-}" == "--dearmor" ]]; then cat; exit 0; fi
 cat >/dev/null 2>&1
 exit 0
 EOF
@@ -735,12 +781,14 @@ reset_state() {
     rm -rf "${MK:?}/etc" "${MK:?}/opt" "${MK:?}/root" "${MK:?}/var" "${MK:?}/tmp"
     mkdir -p "$MK/etc/systemd/system" "$MK/etc/dhcp" \
         "$MK/etc/apt/sources.list.d" "$MK/etc/apt/keyrings" \
+        "$MK/usr/local/bin" \
         "$MK/opt" "$MK/root" "$MK/var/log" "$MK/tmp" "$MK/var/lib"
     echo "$CT_IP" > "$HS/ct_ip"
     : > "$HS/ct_list"
     : > "$HS/calls.log"
     echo "getent_mode=ok" > "$HS/getent_mode"
     echo "x86_64" > "$HS/host_arch"
+    echo "24.11.0" > "$HS/node_v"        # node-Mock: Node 24 (Default)
     unseed_inner_tools   # Inner-Fakebin wieder auf "nacktes Debian" zurücksetzen
 }
 run_installer() {
@@ -882,7 +930,8 @@ t "systemd-Unit: Restart=always + Prod-Pfade"
 assert_file "$UNIT_PATH"
 assert_fcontains "$UNIT_PATH" "Restart=always"
 assert_fcontains "$UNIT_PATH" "RestartSec=10"
-assert_fcontains "$UNIT_PATH" "ExecStart=/usr/bin/npm run start"
+assert_fcontains "$UNIT_PATH" "run start"
+assert_fcontains "$UNIT_PATH" "npm"
 assert_fcontains "$UNIT_PATH" "After=network-online.target postgresql.service"
 assert_fcontains "$UNIT_PATH" "Requires=postgresql.service"
 assert_fcontains "$UNIT_PATH" "EnvironmentFile="
@@ -1015,6 +1064,43 @@ ec=$(run_installer); assert_exit 0 "$ec"
 assert_out "Template-Suffix 'arm64'"
 assert_out "Template: debian-13-standard_13.9-1_arm64.tar.zst"
 assert_fcontains "$HS/ct_200.create" "debian-13-standard_13.9-1_arm64.tar.zst"
+
+t "Live-Grube NodeSource-trixie: apt liefert Node 20 ohne npm → nodejs.org-Fallback (CT 207)"
+reset_state
+touch "$HS/apt_nodejs_fail"        # NodeSource-Repo nicht installierbar
+echo "20.19.2" > "$HS/node_v"       # Debian-Repo: nodejs 20.19.2 (ohne npm)
+touch "$HS/node_v_debian"           # apt-Mock: node da, npm fehlt
+ec=$(run_installer); assert_exit 0 "$ec"
+assert_out "Node.js 24.x installieren (NodeSource, Fallback nodejs.org)"
+assert_out "Fallback: node-v24.11.0-linux-x64.tar.xz"
+assert_calls 1 "nodejs.org/dist"
+assert_out "Web-UI antwortet (HTTP 200 auf Port 8080)"
+assert_out "SignuDoc ist bereit!"
+
+t "Live-Grube: NodeSource-Repo sauber (nodistro) → kein Fallback nötig"
+reset_state
+ec=$(run_installer); assert_exit 0 "$ec"
+assert_no_out "Fallback: node-v24"
+assert_calls 1 "deb.nodesource.com"
+assert_out "npm 11.3.0"
+
+t "NodeSource-Installation: sources.list braucht nodistro (nicht Codename)"
+reset_state
+ec=$(run_installer); assert_exit 0 "$ec"
+# Der Key-Datei-Inhalt ist ein Datei-Write, kein Tool-Call → direkt prüfen
+assert_fcontains "$MK/etc/apt/sources.list.d/nodesource.list" "nodistro main"
+assert_no_fcontains "$MK/etc/apt/sources.list.d/nodesource.list" "trixie"
+
+t "Node endgültig unmöglich → die() mit Diagnose (node/npm/apt-cache)"
+reset_state
+touch "$HS/apt_nodejs_fail"
+echo "20.19.2" > "$HS/node_v"
+touch "$HS/node_v_debian"
+# Fallback soll fehlschlagen: nodejs.org nicht erreichbar machen
+touch "$HS/no_nodejs_org"
+ec=$(run_installer); assert_exit 1 "$ec"
+assert_out "Node.js 24.x + npm konnten NICHT installiert werden"
+assert_out "apt-get install -y nodejs npm"
 
 t "verify_ct_started: pct create Exit-0-Täuschung (spawn fail) → die() mit Fehlerkette"
 reset_state

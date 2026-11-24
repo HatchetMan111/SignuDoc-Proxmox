@@ -27,6 +27,14 @@ Datenbank + Migrationen an und startet alles als systemd-Service `signudoc` (`Re
 ersten (Admin-)Account erstellen. Wer die URL zuerst öffnet, wird Administrator; mit
 `--setup-token` schützt du `/setup` zusätzlich durch ein Geheimnis.
 
+**APP_URL:** Der Installer pinnt `APP_URL=http://127.0.0.1:<PORT>` in `/opt/signudoc/.env`
+(Loopback ist in Produktion erlaubt, eine LAN-IP ohne HTTPS nicht). Ohne `APP_URL` schlägt
+SignuDocs Auth-Initialisierung fehl und `/setup` endet mit „Setup could not be completed.
+Please try again." (v1.0.4 fixt das; `--update` ergänzt es bei Alt-Installationen automatisch).
+Für eine echte Domain mit HTTPS später `APP_URL=https://sign.example.com` in derselben
+`.env` setzen und `--update` ausführen. Die Signer-Links in den Outbox-Mails folgen dann
+automatisch der neuen Adresse.
+
 ### Optionen (hinter dem schließenden Anführungszeichen anhängen)
 
 ```bash

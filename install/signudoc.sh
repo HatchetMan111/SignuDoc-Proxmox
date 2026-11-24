@@ -36,7 +36,7 @@
 set -Eeuo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="1.0.3"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
+INSTALLER_VERSION="1.0.4"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
 APP_NAME="signudoc"
 UPSTREAM_OWNER="NYLLON-SOFTWARE"
 UPSTREAM_REPO="SignuDoc"
@@ -748,8 +748,13 @@ generate_secret() {
 #  2. better-auth (trustedOrigins) akzeptiert Loopback-Aliase (localhost/127.0.0.1)
 #     automatisch – Login/Registrierung vom LAN funktioniert so out-of-the-box;
 #     bei IP-APP_URL müsste manuell jede Origin gepflegt werden.
-# Wer eine Domain mit echtem https einträgt, setzt APP_URL in DATA_DIR/.env
+# Wer eine Domain mit echtem https einträgt, setzt APP_URL in /opt/signudoc/.env
 # (https://signo.example.com) + --update; dann greift der Loopback-Zwang nicht.
+# v1.0.4: APP_URL wird tatsächlich geschrieben – ohne APP_URL/BETTER_AUTH_URL
+# wirft SignuDoc (requireConfigValue in createAppAuth) beim ersten POST /api/setup
+# einen ServiceConfigurationError und das Web-Setup endet mit der generischen
+# Meldung "Setup could not be completed. Please try again." (HTTP 500).
+[[ -n "$(dotenv_get APP_URL)" ]]         || dotenv_set APP_URL "http://127.0.0.1:${UI_PORT}"
 [[ -n "$(dotenv_get DATABASE_URL)" ]]    || dotenv_set DATABASE_URL "postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 [[ -n "$(dotenv_get BETTER_AUTH_SECRET)" ]] || dotenv_set BETTER_AUTH_SECRET "$(generate_secret)"
 [[ -n "$(dotenv_get STORAGE_DRIVER)" ]]  || dotenv_set STORAGE_DRIVER "local"

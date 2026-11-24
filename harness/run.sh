@@ -10,7 +10,7 @@
 #  Usage: bash harness/run.sh [-v]   (Exit 0 = alle Cases grün)
 # =============================================================================
 set -u
-SCRIPT="/home/phil/Proxmox-Scripts/SignuDoc-Proxmox/install/signudoc.sh"
+SCRIPT="${SIGNUDOC_INSTALLER_SCRIPT:-/home/phil/Proxmox-Scripts/SignuDoc-Proxmox/install/signudoc.sh}"
 [[ -f "$SCRIPT" ]] || { echo "✘ Installer nicht gefunden: $SCRIPT"; exit 1; }
 
 MK=$(mktemp -d /tmp/signudoc-harness.XXXXXX)
@@ -958,6 +958,7 @@ sed "s|$MK||g" "$ENV_PATH" > "$ENV_PATH_NORM" 2>/dev/null || true
 chmod 0640 "$ENV_PATH_NORM" 2>/dev/null || true   # Kopie erbt sed-umask (002) - Mode angleichen
 assert_file "$ENV_PATH_NORM"
 assert_fregex "$ENV_PATH_NORM" '^BETTER_AUTH_SECRET=[0-9a-f]{64}$'
+assert_fregex "$ENV_PATH_NORM" '^APP_URL=http://127\.0\.0\.1:8080$'   # v1.0.4: ohne APP_URL schlägt /api/setup mit HTTP 500 fehl
 assert_fregex "$ENV_PATH_NORM" '^DATABASE_URL=postgres://signudoc:[0-9a-f]{48}@127\.0\.0\.1:5432/signudoc$'
 assert_fcontains "$ENV_PATH_NORM" "STORAGE_DRIVER=local"
 assert_fcontains "$ENV_PATH_NORM" "STORAGE_LOCAL_DIR=/var/lib/signudoc/storage"
@@ -1248,6 +1249,11 @@ seed_ct
 echo "APP_URL=https://signo.example.com" >> "$ENV_PATH"
 ec=$(run_installer --update); assert_exit 0 "$ec"
 assert_fcontains "$ENV_PATH" "APP_URL=https://signo.example.com"
+
+t "--update ergänzt fehlendes APP_URL (Loopback) bei Alt-Installationen (v1.0.3)"
+seed_ct   # ENVSEED ohne APP_URL = Stand vor v1.0.4
+ec=$(run_installer --update); assert_exit 0 "$ec"
+assert_fcontains "$ENV_PATH" "APP_URL=http://127.0.0.1:8080"
 
 t "--update ohne CT → die() mit Install-Hinweis"
 reset_state

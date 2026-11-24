@@ -118,6 +118,14 @@ automatische Updates über `--update`).
 - **`next/font/google`** lädt die Schriften während des Builds → der CT braucht
   Build-Zeit-Internet (hat er). Danach läuft alles offline weiter.
 
+## Alte Installation reparieren (v1.0.0-Rest im CT)
+
+Ein `--update` aus einer v1.0.0-Installation räumt den kaputten NodeSource-Eintrag selbst
+auf: Die Datei `/etc/apt/sources.list.d/nodesource.list` enthielt einen Debian-Codename
+(`trixie`) statt `nodistro` → jeder `apt-get update` starb mit Exit 100. Der Installer
+erkennt und repariert das **vor** jedem apt-Aufruf und behandelt `apt-get update` generell
+tolerant (ein kaputtes Fremd-Repo beendet die Installation nicht mehr).
+
 ## Node.js-Installation (Live-Grube Debian 13)
 
 NodeSource hat für **Debian 13 (trixie) kein Distributions-Repo**

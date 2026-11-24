@@ -36,7 +36,7 @@
 set -Eeuo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="1.0.2"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
+INSTALLER_VERSION="1.0.3"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
 APP_NAME="signudoc"
 UPSTREAM_OWNER="NYLLON-SOFTWARE"
 UPSTREAM_REPO="SignuDoc"
@@ -450,9 +450,50 @@ die(){ err "$1"; exit 1; }
 : "${NODE_MAJOR:?NODE_MAJOR fehlt (env)}"
 : "${UI_PORT:?UI_PORT fehlt (env)}"
 
+# ── Stale-Repo-Bereinigung + toleranter apt-Helfer ─────────────────────────
+#
+# Live-Grube 2026-11-23 (ProxSmartHome, CT 207): Der allererste Installer-Lauf
+# (v1.0.0) schrieb `deb https://deb.nodesource.com/node_24.x trixie main` in
+# /etc/apt/sources.list.d/nodesource.list. NodeSource hat für Debian 13 (trixie)
+# KEIN Release → JEDER weitere `apt-get update` stirbt mit Exit 100
+# ("does not have a Release file") – und das VOR der Node-Reparatur, sodass der
+# Update-Pfad gar nicht erst bis zum Fix kam. Deshalb:
+#   1. Stale-Codename-Repos VOR jedem apt-get update auf `nodistro` umschreiben
+#      (oder ganz entfernen) – idempotent, mehrfach aufrufbar.
+#   2. apt-get update generell tolerant: ein kaputtes Fremd-Repo darf die
+#      Installation nicht beenden (die Paket-Install selbst prüft der Aufrufer).
+fix_stale_nodesource_repo() {
+    local f=/etc/apt/sources.list.d/nodesource.list
+    [[ -f "$f" ]] || return 0
+    grep -q 'deb.nodesource.com' "$f" 2>/dev/null || return 0
+    if grep -q 'nodistro' "$f" 2>/dev/null; then
+        return 0
+    fi
+    warn "Stale NodeSource-Repo erkannt (Codename statt 'nodistro') – repariere es:"
+    sed -i -E 's#(deb\.nodesource\.com/node_[0-9]+\.x)[[:space:]]+[^[:space:]]+#\1 nodistro#' "$f" 2>/dev/null || true
+    grep -q 'nodistro' "$f" 2>/dev/null || rm -f "$f"   # Notausgang: Repo ganz weg
+    sed -n 's/^/    /p' "$f" 2>/dev/null || true
+    return 0
+}
+
+apt_update_tolerant() {
+    # ein kaputtes Fremd-Repo (z. B. NodeSource-trixie) darf Exit 100 liefern,
+    # ohne die Installation zu beenden – die eigentliche Paket-Installation
+    # prüft der Aufrufer separat.
+    if ! apt-get update -qq >/dev/null 2>&1; then
+        fix_stale_nodesource_repo
+        if ! apt-get update -qq >/dev/null 2>&1; then
+            warn "apt-get update meldet weiterhin Fehler (fremde Repos?) – fahre fort;"
+            warn "die Installation prüft jedes Paket einzeln. Details: apt-get update"
+        fi
+    fi
+    return 0
+}
+
 echo ">>> curl sicherstellen (nacktes Debian-Template hat KEIN curl) ..."
+fix_stale_nodesource_repo
 if ! command -v curl >/dev/null 2>&1; then
-    apt-get update -qq
+    apt_update_tolerant
     apt-get install -y -qq curl ca-certificates >/dev/null
 fi
 
@@ -496,7 +537,7 @@ else
 fi
 
 echo ">>> Basispakete installieren (git, build-tools für native npm-Module, …) ..."
-apt-get update -qq
+apt_update_tolerant
 apt-get install -y -qq --no-install-recommends \
     git ca-certificates curl gnupg lsb-release \
     build-essential python3 pkg-config \
@@ -513,7 +554,7 @@ if ! command -v psql >/dev/null 2>&1 || ! dpkg -s postgresql-17 >/dev/null 2>&1;
     CODENAME=$(lsb_release -cs 2>/dev/null || echo trixie)
     echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt ${CODENAME}-pgdg main" \
         > /etc/apt/sources.list.d/pgdg.list
-    apt-get update -qq >/dev/null 2>&1 || warn "apt update nach PGDG-Einrichtung mit Warnung"
+    apt_update_tolerant
     apt-get install -y -qq postgresql-17 >/dev/null \
         || apt-get install -y -qq postgresql >/dev/null \
         || die "PostgreSQL-Installation fehlgeschlagen (apt-Ausgabe siehe Setup-Log)"
@@ -581,7 +622,7 @@ else
         # lsb_release-Codename verwenden (hat auf Debian 13 ins Leere gezeigt).
         echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
             > /etc/apt/sources.list.d/nodesource.list
-        apt-get update -qq >/dev/null 2>&1 || warn "apt update nach NodeSource-Einrichtung mit Warnung"
+        apt_update_tolerant
         if ! apt-get install -y -qq nodejs >/dev/null 2>&1; then
             warn "NodeSource-Installation von nodejs fehlgeschlagen (Repo/Netz?)"
         fi

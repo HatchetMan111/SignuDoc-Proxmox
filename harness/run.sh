@@ -415,6 +415,16 @@ HS="${HARNESS_STATE:?}"
 MK="$(dirname "$HS")"
 INNERBIN_DIR="$MK/bin-inner"
 echo "apt-get $*" >> "$HS/calls.log"
+if [[ "${1:-}" == "update" ]]; then
+    # Hebel stale_nodesource: sources.list.d/nodesource.list existiert mit
+    # Codename (trixie) statt nodistro → apt-get update MUSS mit Exit 100
+    # scheitern (Live-Grube CT 207, v1.0.0-Rest). Sonst: Erfolg.
+    if [[ -f "$HS/stale_nodesource" ]]; then
+        echo "E: The repository 'https://deb.nodesource.com/node_24.x trixie Release' does not have a Release file." >&2
+        exit 100
+    fi
+    exit 0
+fi
 if [[ "${1:-}" == "install" ]]; then
     for a in "$@"; do
         case "$a" in
@@ -817,6 +827,7 @@ run_installer_bash_c() { # ECHTES bash -c-Muster: Option wird als $0 geliefert
     echo $?
 }
 seed_ct() { # laufender CT mit installiertem SignuDoc
+    # v1.0.0-Rest: NodeSource-Repo mit Codename statt nodistro
     reset_state
     echo "200 running signudoc" > "$HS/ct_list"
     echo "running" > "$HS/ct_200.status"
@@ -1112,6 +1123,47 @@ touch "$HS/no_nodejs_org"
 ec=$(run_installer); assert_exit 1 "$ec"
 assert_out "Node.js 24.x + npm konnten NICHT installiert werden"
 assert_out "apt-get install -y nodejs npm"
+
+t "Live-Grube v1.0.0-Rest: stale NodeSource-Repo (trixie) killt apt → Installer repariert + läuft"
+reset_state
+# CT-Stand wie nach dem fehlgeschlagenen v1.0.0-Lauf: Repo mit Codename,
+# Node 20 von Debian (ohne npm), Code + .env + DB schon vorhanden.
+mkdir -p "$MK/etc/apt/sources.list.d"
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x trixie main" \
+    > "$MK/etc/apt/sources.list.d/nodesource.list"
+touch "$HS/stale_nodesource"        # apt-get update → Exit 100
+seed_inner_tools
+echo "200 running signudoc" > "$HS/ct_list"
+echo "running" > "$HS/ct_200.status"
+echo "signudoc" > "$HS/ct_200.hostname"
+mkdir -p "$MK/opt/signudoc" "$MK/etc/systemd/system" "$MK/var/log" "$MK/var/lib/signudoc/outbox"
+touch "$HS/template_downloaded" "$HS/templates/debian-13-standard_13.6-1_amd64.tar.zst"
+touch "$MK/etc/systemd/system/signudoc.service"
+ec=$(run_installer --update); assert_exit 0 "$ec"
+assert_out "Stale NodeSource-Repo erkannt"
+assert_fcontains "$MK/etc/apt/sources.list.d/nodesource.list" "nodistro"
+assert_no_fcontains "$MK/etc/apt/sources.list.d/nodesource.list" "trixie"
+assert_out "Update abgeschlossen"
+
+t "Toleranter apt-Update: kaputtes Fremd-Repo beendet die Installation NICHT"
+reset_state
+touch "$HS/stale_nodesource"
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x trixie main" \
+    > "$MK/etc/apt/sources.list.d/nodesource.list"
+seed_inner_tools
+touch "$HS/template_downloaded" "$HS/templates/debian-13-standard_13.6-1_amd64.tar.zst"
+ec=$(run_installer); assert_exit 0 "$ec"
+assert_out "apt-get update meldet weiterhin Fehler"   # nur wenn 2. Versuch scheitert
+assert_out "SignuDoc ist bereit!"
+
+t "Stale-Repo ohne NodeSource-Bezug: Installer lässt fremde Listen in Ruhe"
+reset_state
+mkdir -p "$MK/etc/apt/sources.list.d"
+echo "deb http://deb.debian.org/debian trixie main" > "$MK/etc/apt/sources.list.d/custom.list"
+seed_inner_tools
+touch "$HS/template_downloaded" "$HS/templates/debian-13-standard_13.6-1_amd64.tar.zst"
+ec=$(run_installer); assert_exit 0 "$ec"
+assert_fcontains "$MK/etc/apt/sources.list.d/custom.list" "deb.debian.org"
 
 t "verify_ct_started: pct create Exit-0-Täuschung (spawn fail) → die() mit Fehlerkette"
 reset_state
